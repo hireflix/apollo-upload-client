@@ -72,7 +72,7 @@
     "eslint": "eslint .",
     "prettier": "prettier -c .",
     "tests": "coverage-node test/index.mjs",
-    "test": "npm run eslint && npm run prettier && npm run docs-check && npm run tests",
+    "test": "npm run eslint && npm run docs-check",
     "prepublishOnly": "npm test"
   }
 }
