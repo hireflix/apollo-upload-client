@@ -3,13 +3,15 @@
 const { ApolloLink, Observable } = require("@apollo/client/core");
 const {
   createSignalIfSupported,
-  fallbackHttpConfig,
-  parseAndCheckHttpResponse,
+  fallbackHttpConfig,  
   rewriteURIForGET,
   selectHttpOptionsAndBody,
   selectURI,
   serializeFetchParameter,
 } = require("@apollo/client/link/http");
+const { getMainDefinition, hasDirectives } = require("@apollo/client/utilities");
+const { invariant } = require("@apollo/client/utilities/globals");
+const { readJsonBody, readMultipartBody } = require("@apollo/client/link/http/parseAndCheckHttpResponse.js");
 const extractFiles = require("extract-files/public/extractFiles.js");
 const formDataAppendFile = require("./formDataAppendFile.js");
 const isExtractableFile = require("./isExtractableFile.js");
@@ -124,6 +126,31 @@ module.exports = function createUploadLink({
 
     let uri = selectURI(operation, fetchUri);
 
+    const definitionIsSubscription = (d) => {
+      return d.kind === 'OperationDefinition' && d.operation === 'subscription';
+    };
+
+    const isSubscription = definitionIsSubscription(getMainDefinition(operation.query));
+    // does not match custom directives beginning with @defer
+    const hasDefer = hasDirectives(['defer'], operation.query);
+
+    if (hasDefer || isSubscription) {
+      options.headers = options.headers || {};
+      let acceptHeader = "multipart/mixed;";
+      // Omit defer-specific headers if the user attempts to defer a selection
+      // set on a subscription and log a warning.
+      if (isSubscription && hasDefer) {
+        invariant.warn("Multipart-subscriptions do not support @defer");
+      }
+
+      if (isSubscription) {
+        acceptHeader += 'boundary=graphql;subscriptionSpec=1.0,application/json';
+      } else if (hasDefer) {
+        acceptHeader += 'deferSpec=20220824,application/json';
+      }
+      options.headers.accept = acceptHeader;
+    }
+
     if (files.size) {
       // Automatically set by `fetch` when the `body` is a `FormData` instance.
       delete options.headers["content-type"];
@@ -209,9 +236,14 @@ module.exports = function createUploadLink({
         .then((response) => {
           // Forward the response on the context.
           operation.setContext({ response });
-          return response;
+          const ctype = response.headers?.get('content-type');
+
+          if (ctype !== null && /^multipart\/mixed/i.test(ctype)) {
+            return readMultipartBody(response, observer);
+          } else {
+            return readJsonBody(response, operation, observer);
+          }
         })
-        .then(parseAndCheckHttpResponse(operation))
         .then((result) => {
           observer.next(result);
           observer.complete();
